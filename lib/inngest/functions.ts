@@ -1,87 +1,91 @@
-import { inngest } from "@/lib/inngest/client";
-import { sendNewsSummaryEmail, sendWelcomeEmail } from "@/lib/nodemailer";
-import { getAllUsersForNewsEmail } from "@/lib/actions/user.actions";
-import { getWatchlistSymbolsByEmail } from "@/lib/actions/watchlist.actions";
-import { getNews } from "@/lib/actions/finnhub.actions";
-import { getFormattedTodayDate } from "@/lib/utils";
+ import { inngest } from "@/lib/inngest/client";
+ import { sendNewsSummaryEmail, sendWelcomeEmail } from "@/lib/nodemailer";
+ import { getAllUsersForNewsEmail } from "@/lib/actions/user.actions";
+ import { getWatchlistSymbolsByEmail } from "@/lib/actions/watchlist.actions";
+ import { getNews } from "@/lib/actions/finnhub.actions";
+ import { getFormattedTodayDate } from "@/lib/utils";
 
-/**
- * -----------------------------
- * 1. SIGNUP WELCOME EMAIL
- * -----------------------------
- */
-export const sendSignUpEmail = inngest.createFunction(
-  { id: "sign-up-email" },
-  { event: "app/user.created" },
-  async ({ event }) => {
-    const { email, name } = event.data;
+ /**
+  * -----------------------------
+  * 1. SIGNUP WELCOME EMAIL
+  * -----------------------------
+  */
 
-    await sendWelcomeEmail({
-      email,
-      name,
-      intro: "Thanks for joining Signalist. Welcome aboard!",
-    });
+ export const sendSignUpEmail = inngest.createFunction(
+   {
+     id: "sign-up-email",
+     triggers: [
+       { event: "app/user.created" }, // ✅ v4 syntax
+     ],
+   },
+   async ({ event, step }) => {
+     const { email, name } = event.data;
 
-    return {
-      success: true,
-      message: "Welcome email sent",
-    };
-  },
-);
+     await step.run("send-welcome-email", async () => {
+       await sendWelcomeEmail({
+         email,
+         name,
+         intro: "Thanks for joining Signalist. Welcome aboard!",
+       });
+     });
 
-/**
- * -----------------------------
- * 2. DAILY NEWS EMAIL
- * -----------------------------
- */
-export const sendDailyNewsSummary = inngest.createFunction(
-  { id: "daily-news-summary" },
-  [
-    { event: "app/send.daily.news" },
-    { cron: "0 12 * * *" }, // runs daily at 12:00
-  ],
-  async () => {
-    // Step 1: Get all users
-    const users = await getAllUsersForNewsEmail();
+     return { success: true };
+   },
+ );
 
-    if (!users || users.length === 0) {
-      return {
-        success: false,
-        message: "No users found",
-      };
-    }
+ /**
+  * -----------------------------
+  * 2. DAILY NEWS EMAIL (CRON)
+  * -----------------------------
+  */
 
-    // Step 2: Loop users and send news
-    for (const user of users) {
-      try {
-        const symbols = await getWatchlistSymbolsByEmail(user.email);
+ export const sendDailyNewsSummaryCron = inngest.createFunction(
+   {
+     id: "daily-news-summary-cron",
+     triggers: [
+       { cron: "0 12 * * *" }, // ✅ v4 syntax
+     ],
+   },
+   async ({ step }) => {
+     await step.run("run-daily-news-email", async () => {
+       await runDailyNewsEmail();
+     });
 
-        let articles = await getNews(symbols);
+     return { success: true };
+   },
+ );
 
-        // fallback if no watchlist news
-        if (!articles || articles.length === 0) {
-          articles = await getNews();
-        }
+ /**
+  * -----------------------------
+  * SHARED LOGIC
+  * -----------------------------
+  */
 
-        const newsContent = JSON.stringify(
-          (articles || []).slice(0, 5),
-          null,
-          2,
-        );
+ async function runDailyNewsEmail() {
+   const users = await getAllUsersForNewsEmail();
 
-        await sendNewsSummaryEmail({
-          email: user.email,
-          date: getFormattedTodayDate(),
-          newsContent,
-        });
-      } catch (err) {
-        console.error("Error sending daily news to:", user.email, err);
-      }
-    }
+   if (!users?.length) {
+     console.log("No users found for daily news email");
+     return;
+   }
 
-    return {
-      success: true,
-      message: "Daily news emails sent",
-    };
-  },
-);
+   for (const user of users) {
+     try {
+       const symbols = await getWatchlistSymbolsByEmail(user.email);
+
+       let articles = await getNews(symbols);
+
+       if (!articles?.length) {
+         articles = await getNews();
+       }
+
+       await sendNewsSummaryEmail({
+         email: user.email,
+         date: getFormattedTodayDate(),
+         newsContent: JSON.stringify((articles || []).slice(0, 5), null, 2),
+       });
+     } catch (err) {
+       console.error("Error sending email to:", user.email, err);
+     }
+   }
+ }
